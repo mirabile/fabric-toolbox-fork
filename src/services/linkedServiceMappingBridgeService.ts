@@ -77,6 +77,38 @@ export class LinkedServiceMappingBridgeService {
         return;
       }
       
+      // Special handling for expanded FabricDataPipelines individual connections
+      if (ls.linkedServiceType === 'FabricDataPipelines' && 
+          ls.linkedServiceDefinition?.expandedFromShared === true) {
+        
+        const originalSharedName = ls.linkedServiceDefinition.originalSharedName;
+        const pipelineName = ls.linkedServiceDefinition.parentPipeline;
+        const activityName = ls.linkedServiceDefinition.activityName;
+        
+        // Create bridge entry using pipeline + activity as key
+        // This matches how activities reference the connection
+        const activityKey = `${pipelineName}_${activityName}_invoke`;
+        
+        bridge[activityKey] = {
+          originalName: originalSharedName || ls.linkedServiceName,
+          connectionId: ls.deployedConnectionId || `pending-${ls.linkedServiceName}`,
+          connectionDisplayName: ls.deployedConnectionName || ls.linkedServiceName,
+          connectionType: ls.selectedConnectionType || 'FabricDataPipelines',
+          mappingSource: ls.deployedConnectionId ? 'deployed' : 'pending-deployment',
+          timestamp: new Date().toISOString(),
+          deploymentTimestamp: ls.deploymentTimestamp,
+          // Additional metadata for debugging
+          activityContext: {
+            pipelineName,
+            activityName,
+            isIndividualConnection: true
+          }
+        } as any;
+        
+        console.log(`Bridge (Individual): ${activityKey} → ${ls.deployedConnectionId || 'pending'}`);
+        return; // Skip default mapping logic
+      }
+      
       // Case 1: Mapped to existing connection
       if (ls.mappingMode === 'existing' && ls.existingConnectionId) {
         bridge[ls.linkedServiceName] = {
@@ -201,11 +233,18 @@ export class LinkedServiceMappingBridgeService {
       'direct': 'activity',
       'typeProperties': 'activity',
       'dataset': 'dataset',
+      'invoke': 'invoke',
       'invokePipeline': 'invoke',
       'source': 'source',
       'sink': 'sink',
+      'staging': 'staging',
+      'linkedServices': 'linkedServices',
       'cluster': 'cluster',
       'storage': 'storage',
+      'script': 'script',
+      'jar': 'jar',
+      'file': 'file',
+      'sparkJob': 'sparkJob',
       'resource': 'resource',
       'refobj_0': 'refobj_0',
       'refobj_1': 'refobj_1',

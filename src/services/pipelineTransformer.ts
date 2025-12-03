@@ -252,6 +252,25 @@ export class PipelineTransformer {
   }
 
   /**
+   * Get the mapped FabricDataPipelines connection ID for an ExecutePipeline activity
+   * Looks up in pipelineReferenceMappings[pipelineName][pipelineName_activityName_invoke]
+   */
+  private getConnectionIdForExecutePipeline(activityName: string): string | undefined {
+    if (!this.pipelineReferenceMappings || !this.currentPipelineName) {
+      return undefined;
+    }
+
+    const pipelineMappings = this.pipelineReferenceMappings[this.currentPipelineName];
+    if (!pipelineMappings) {
+      return undefined;
+    }
+
+    // Build referenceId: pipelineName_activityName_invoke
+    const referenceId = `${this.currentPipelineName}_${activityName}_invoke`;
+    return pipelineMappings[referenceId];
+  }
+
+  /**
    * Transform ExecutePipeline activity to InvokePipeline activity for Fabric
    */
   transformExecutePipelineToInvokePipeline(activity: any, connectionMappings?: PipelineConnectionMappings): any {
@@ -282,9 +301,9 @@ export class PipelineTransformer {
         parameters: activity.typeProperties?.parameters || {}
       },
       externalReferences: {
-        // This will be populated with the FabricDataPipelines connection ID during deployment
-        // DO NOT use default GUIDs - this must be resolved during deployment
-        connection: '' // Will be populated during deployment with actual connection ID
+        // Look up the mapped FabricDataPipelines connection from pipelineReferenceMappings
+        // Format: pipelineReferenceMappings[pipelineName][pipelineName_activityName_invoke]
+        connection: this.getConnectionIdForExecutePipeline(activity.name) || '' // Resolved from mappings
       },
       // Store original reference for deployment logic
       _originalTargetPipeline: activity.typeProperties?.pipeline?.referenceName

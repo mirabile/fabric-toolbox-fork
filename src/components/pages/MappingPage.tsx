@@ -11,7 +11,7 @@ import { WizardLayout } from '../WizardLayout';
 import { WorkspaceDisplay } from '../WorkspaceDisplay';
 import { NavigationDebug } from '../NavigationDebug';
 import { useAppContext } from '../../contexts/AppContext';
-import { ActivityConnectionMapping, FabricTarget, PipelineConnectionMappings, CustomActivityMapping } from '../../types';
+import { ActivityConnectionMapping, FabricTarget, CustomActivityMapping, PipelineConnectionMappings } from '../../types';
 import { extractString } from '../../lib/validation';
 import { debounce } from '../../lib/debounce';
 import { buildReferenceId, buildLegacyUniqueId } from '../../lib/utils';
@@ -84,10 +84,10 @@ export function MappingPage() {
   const [existingConnections, setExistingConnections] = useState<ExistingFabricConnection[]>([]);
   const [loadingConnections, setLoadingConnections] = useState(false);
   const [showDebugMetrics, setShowDebugMetrics] = useState(false);
-  const [pipelineConnectionMappings, setPipelineConnectionMappings] = useState<PipelineConnectionMappings>({});
   
-  // NEW: ReferenceId-based mappings (fixes dropdown persistence bug)
+  // ReferenceId-based mappings (NEW format only)
   const [pipelineReferenceMappings, setPipelineReferenceMappings] = useState<Record<string, Record<string, string>>>({});
+  const [pipelineConnectionMappings, setPipelineConnectionMappings] = useState<PipelineConnectionMappings>({});
   
   const [autoSelectedMappings, setAutoSelectedMappings] = useState<string[]>([]);
   
@@ -318,6 +318,73 @@ export function MappingPage() {
   // referenceId-aware ActivityReference objects. PipelineActivityAnalysisService is still used
   // in deployment pipelines (pipelineConnectionTransformerService) for lightweight reference extraction.
   
+  // Helper: Find connection for LinkedService with fallback to existing connections
+  // Handles both ExecutePipeline (individual/shared) and standard LinkedService activities
+  const findConnectionForLinkedService = useCallback((
+    linkedServiceName: string, 
+    referenceLocation: string, 
+    referenceId: string
+  ): { connectionId: string, source: string } | undefined => {
+    // Special handling for ExecutePipeline activities (invoke-pipeline)
+    if (referenceLocation === 'invoke-pipeline') {
+      // Priority 1: Check for individual per-activity connection (uses referenceId as key)
+      const individualBridgeEntry = state.linkedServiceConnectionBridge?.[referenceId];
+      if (individualBridgeEntry?.connectionId) {
+        // Allow pending/new connections for FabricDataPipelines (they need mapping before deployment)
+        return { 
+          connectionId: individualBridgeEntry.connectionId, 
+          source: '🎯 bridge (individual)' 
+        };
+      }
+      
+      // Priority 2: Check for shared FabricDataPipelines connection
+      const sharedBridgeEntry = state.linkedServiceConnectionBridge?.['FabricDataPipelines_Shared'];
+      if (sharedBridgeEntry?.connectionId) {
+        // Allow pending/new connections for shared FabricDataPipelines too
+        return { 
+          connectionId: sharedBridgeEntry.connectionId, 
+          source: '🎯 bridge (shared)' 
+        };
+      }
+      
+      // Priority 3: Fallback to existing deployed FabricDataPipelines connections
+      if (existingConnections.length > 0) {
+        const matchedConnection = existingConnections.find(
+          connection => connection.connectionDetails.type === 'FabricDataPipelines'
+        );
+        if (matchedConnection) {
+          return { connectionId: matchedConnection.id, source: '🔗 deployed connection' };
+        }
+      }
+      
+      return undefined;
+    }
+    
+    // Standard handling for all other activity types (Copy, Lookup, Custom, etc.)
+    // Priority 1: Check bridge for LinkedService name (shared LinkedServices)
+    const bridgeEntry = state.linkedServiceConnectionBridge?.[linkedServiceName];
+    if (bridgeEntry?.connectionId && 
+        !bridgeEntry.connectionId.startsWith('pending-') &&
+        !bridgeEntry.connectionId.startsWith('new-')) {
+      return { connectionId: bridgeEntry.connectionId, source: '🎯 bridge' };
+    }
+
+    // Priority 2: Case-insensitive name match in existingConnections
+    if (existingConnections.length > 0) {
+      const matchedConnection = existingConnections.find(
+        connection => 
+          connection.displayName.toLowerCase() === linkedServiceName.toLowerCase() &&
+          connection.connectionDetails.type !== 'FabricDataPipelines'
+      );
+
+      if (matchedConnection) {
+        return { connectionId: matchedConnection.id, source: '🔗 name-match' };
+      }
+    }
+
+    return undefined;
+  }, [state.linkedServiceConnectionBridge, existingConnections]);
+  
   // NEW: Auto-apply bridge mappings to pipeline activities with fallback to existing connections
   useEffect(() => {
     // Skip if no selected components
@@ -341,42 +408,6 @@ export function MappingPage() {
     console.log(`🔄 Auto-mapping pipelines with bridge v${state.bridgeVersion}...`);
     console.log(`  - Bridge entries: ${hasBridge ? Object.keys(state.linkedServiceConnectionBridge!).length : 0}`);
     console.log(`  - Existing connections: ${existingConnections.length}`);
-
-    // Helper: Find connection for LinkedService with fallback to existing connections
-    const findConnectionForLinkedService = (linkedServiceName: string, referenceLocation: string): { connectionId: string, source: string } | undefined => {
-      // Priority 1: Check bridge for LinkedService name
-      const bridgeEntry = state.linkedServiceConnectionBridge?.[linkedServiceName];
-      if (bridgeEntry?.connectionId && 
-          !bridgeEntry.connectionId.startsWith('pending-') &&
-          !bridgeEntry.connectionId.startsWith('new-')) {
-        return { connectionId: bridgeEntry.connectionId, source: '🎯 bridge' };
-      }
-
-      // Priority 2: Case-insensitive name match in existingConnections
-      if (existingConnections.length > 0) {
-        let matchedConnection: ExistingFabricConnection | undefined;
-        
-        if (referenceLocation === 'invoke') {
-          // InvokePipeline: match by connection type
-          matchedConnection = existingConnections.find(
-            connection => connection.connectionDetails.type === 'FabricDataPipelines'
-          );
-        } else {
-          // Other references: case-insensitive name match
-          matchedConnection = existingConnections.find(
-            connection => 
-              connection.displayName.toLowerCase() === linkedServiceName.toLowerCase() &&
-              connection.connectionDetails.type !== 'FabricDataPipelines'
-          );
-        }
-
-        if (matchedConnection) {
-          return { connectionId: matchedConnection.id, source: '🔗 name-match' };
-        }
-      }
-
-      return undefined;
-    };
 
     const autoMappings: PipelineConnectionMappings = {}; // Old format for deployment
     const referenceMappings: Record<string, Record<string, string>> = {}; // New format for UI
@@ -428,7 +459,7 @@ export function MappingPage() {
             };
           } else {
             // Try to find connection using bridge or name-match fallback
-            const connectionResult = findConnectionForLinkedService(ref.linkedServiceName, ref.location);
+            const connectionResult = findConnectionForLinkedService(ref.linkedServiceName, ref.location, ref.referenceId);
             
             if (connectionResult) {
               // Auto-map: NEW FORMAT (UI)
@@ -561,7 +592,7 @@ export function MappingPage() {
         payload: state.bridgeVersion
       });
     }
-  }, [state.linkedServiceConnectionBridge, state.bridgeVersion, state.lastProcessedBridgeVersion, state.selectedComponents, state.adfComponents, pipelineReferenceMappings, existingConnections, dispatch]);
+  }, [state.linkedServiceConnectionBridge, state.bridgeVersion, state.lastProcessedBridgeVersion, state.selectedComponents, state.adfComponents, pipelineReferenceMappings, existingConnections, dispatch, findConnectionForLinkedService]);
 
   // NEW: Re-run auto-mapping when bridge is updated with deployed connection IDs
   useEffect(() => {
@@ -602,8 +633,6 @@ export function MappingPage() {
 
       activitiesWithReferences.forEach(activityWithRefs => {
         activityWithRefs.references.forEach(ref => {
-          const bridgeEntry = state.linkedServiceConnectionBridge[ref.linkedServiceName];
-          
           // Check if this reference already has a manual mapping
           const existingMapping = pipelineReferenceMappings[component.name]?.[ref.referenceId];
           
@@ -622,35 +651,40 @@ export function MappingPage() {
               linkedServiceReference: { name: ref.linkedServiceName },
               selectedConnectionId: existingMapping
             };
-          } else if (bridgeEntry?.connectionId && 
-                     !bridgeEntry.connectionId.startsWith('pending-') &&
-                     !bridgeEntry.connectionId.startsWith('new-')) {
-            // Auto-map newly deployed connection
-            if (!newFormatMappings[component.name]) {
-              newFormatMappings[component.name] = {};
+          } else {
+            // Try to find connection using bridge (handles both ExecutePipeline and standard activities)
+            const connectionResult = findConnectionForLinkedService(ref.linkedServiceName, ref.location, ref.referenceId);
+            
+            if (connectionResult && 
+                !connectionResult.connectionId.startsWith('pending-') &&
+                !connectionResult.connectionId.startsWith('new-')) {
+              // Auto-map newly deployed connection
+              if (!newFormatMappings[component.name]) {
+                newFormatMappings[component.name] = {};
+              }
+              newFormatMappings[component.name][ref.referenceId] = connectionResult.connectionId;
+              
+              // OLD FORMAT (Deployment)
+              const legacyUniqueId = buildLegacyUniqueId(activityWithRefs.activityName, ref.linkedServiceName, globalRefIndex);
+              if (!oldFormatMappings[component.name]) {
+                oldFormatMappings[component.name] = {};
+              }
+              oldFormatMappings[component.name][legacyUniqueId] = {
+                activityName: activityWithRefs.activityName,
+                activityType: activityWithRefs.activityType,
+                linkedServiceReference: { name: ref.linkedServiceName },
+                selectedConnectionId: connectionResult.connectionId
+              };
+              
+              autoMappedSet.add(`${component.name}:${ref.referenceId}`);
+              newMappingsCount++;
+              
+              autoMappingDetails.push(
+                `${component.name}.${activityWithRefs.activityName} → ${connectionResult.connectionId} (${connectionResult.source})`
+              );
+              
+              console.log(`Auto-mapped after deployment: ${ref.linkedServiceName} → ${connectionResult.connectionId} (${connectionResult.source})`);
             }
-            newFormatMappings[component.name][ref.referenceId] = bridgeEntry.connectionId;
-            
-            // OLD FORMAT (Deployment)
-            const legacyUniqueId = buildLegacyUniqueId(activityWithRefs.activityName, ref.linkedServiceName, globalRefIndex);
-            if (!oldFormatMappings[component.name]) {
-              oldFormatMappings[component.name] = {};
-            }
-            oldFormatMappings[component.name][legacyUniqueId] = {
-              activityName: activityWithRefs.activityName,
-              activityType: activityWithRefs.activityType,
-              linkedServiceReference: { name: ref.linkedServiceName },
-              selectedConnectionId: bridgeEntry.connectionId
-            };
-            
-            autoMappedSet.add(`${component.name}:${ref.referenceId}`);
-            newMappingsCount++;
-            
-            autoMappingDetails.push(
-              `${component.name}.${activityWithRefs.activityName} → ${bridgeEntry.connectionDisplayName}`
-            );
-            
-            console.log(`Auto-mapped after deployment: ${ref.linkedServiceName} → ${bridgeEntry.connectionId}`);
           }
           
           globalRefIndex++;
@@ -709,7 +743,7 @@ export function MappingPage() {
       
       console.log('Post-deployment auto-mapping details:', autoMappingDetails);
     }
-  }, [state.bridgeVersion, state.linkedServiceConnectionBridge, state.selectedComponents, state.adfComponents, pipelineReferenceMappings, dispatch]);
+  }, [state.bridgeVersion, state.linkedServiceConnectionBridge, state.selectedComponents, state.adfComponents, pipelineReferenceMappings, dispatch, findConnectionForLinkedService]);
 
   useEffect(() => {
     const loadConnections = async () => {

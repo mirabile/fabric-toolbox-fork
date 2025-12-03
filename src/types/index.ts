@@ -478,6 +478,26 @@ export interface LinkedServiceConnection {
   deploymentError?: string;            // Error message if deployment failed
 }
 
+// FabricDataPipelines-specific connection definition with shared connection support
+export interface FabricDataPipelinesDefinition {
+  type: 'FabricDataPipelines';
+  isSharedConnection?: boolean; // True when one connection serves multiple ExecutePipeline activities
+  affectedActivities?: Array<{
+    pipelineName: string;
+    activityName: string;
+    targetPipelineName: string;
+    waitOnCompletion?: boolean;
+    parameters?: Record<string, any>;
+  }>;
+  useSeparateConnections?: boolean; // Advanced option: allow user to override shared behavior
+  // Legacy properties (kept for backward compatibility when useSeparateConnections=true)
+  parentPipeline?: string;
+  activityName?: string;
+  targetPipelineName?: string;
+  waitOnCompletion?: boolean;
+  parameters?: Record<string, any>;
+}
+
 export interface FabricGateway {
   id: string;
   displayName: string;
