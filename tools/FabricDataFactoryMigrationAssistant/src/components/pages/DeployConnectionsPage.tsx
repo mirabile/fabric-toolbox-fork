@@ -124,7 +124,8 @@ export function DeployConnectionsPage({}: DeployConnectionsPageProps) {
       const results = await connectionDeploymentService.deployNewConnections(
         deployableConnections,
         state.auth.accessToken,
-        state.selectedWorkspace.id
+        state.selectedWorkspace.id,
+        state.connectionMappings?.supportedConnectionTypes
       );
 
       // Update progress as deployment progresses
